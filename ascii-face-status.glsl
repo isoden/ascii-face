@@ -243,7 +243,14 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     // TOPDOWN_Y=1（Ghostty）: fragCoord.y は既に下向き正なので反転不要。
     // TOPDOWN_Y=0（標準規約）: fragCoord.y は上向き正なので反転して下向き正にする。
     if (TOPDOWN_Y < 0.5) p.y = -p.y;
-    p.y += sin(iTime * 1.6) * 0.012;
+    // 2026-07-13: 単純な上下呼吸(sin*1.6, 0.012)だけでは「浮遊感」が弱いとの
+    // フィードバックで振幅を上げたが、まだ足りないとの再フィードバックで大幅増強。
+    // 単一周波数の sin だと振り子のように規則的に見えるため、周期の異なる sin を
+    // 2本ずつ x/y に重ねて位相をずらし、風船が漂うような不規則さを出した。
+    // faceField() より前の p に適用しているため全フェーズ(idle/think/work/done/err)
+    // に等しく効く。
+    p.x += sin(iTime * 0.31 + 1.3) * 0.035 + sin(iTime * 0.83 + 0.6) * 0.012;
+    p.y += sin(iTime * 0.42) * 0.055 + sin(iTime * 1.05 + 2.1) * 0.015;
 
     vec2 cur = iCurrentCursor.xy / iResolution.xy - 0.5;
     cur.y *= CURSOR_Y_FLIP;
