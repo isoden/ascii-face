@@ -60,6 +60,7 @@ event="$(jq -r '.hook_event_name // empty' <<<"$json" 2>/dev/null || true)"
 
 # キー色。claude-terminal-face-status.glsl の *_KEY / misc/palette-check.mjs と
 # 厳密に一致させること（デコード用の固定パレット。2026-07-18 再設計）。
+IDLE=5ce0c9
 THINK=f7b81f
 WORK=41419c
 DONE=0a9900
@@ -95,6 +96,15 @@ case "$event" in
     ;;
   Stop)
     send "$DONE"
+    ;;
+  SessionStart)
+    # /clear・/new・/reset で会話をリセットしたとき、前の done/err 顔が OSC 12 で
+    # 持続したままになる（claude 実行中は外側シェルの precmd が発火せず idle に
+    # 戻せない。spec.md §9.3-4）。SessionStart を拾って idle に戻す。
+    # source は clear/startup/resume/compact のいずれか（compact も含め全般で idle。
+    # ユーザー判断 2026-07-20）。/new・/reset の source 値は未確認だが、source で
+    # 絞らないため確実に効く。
+    send "$IDLE"
     ;;
 esac
 
