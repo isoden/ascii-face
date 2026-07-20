@@ -5,9 +5,7 @@
 //  補間なので、状態が変わると形状が連続的にモーフする。
 //
 //  表情の決まり方:
-//    直近に入力あり      → SMILE
-//    しばらく無操作      → IDLE
-//    さらに放置          → SLEEP
+//    平常時              → IDLE（バリアントが一定周期で切り替わる）
 //    Claude Code が調査/プランニング中 → THINK（頭上に「?」が浮かび左右に漂う）
 //    Claude Code が実装（Edit/Write/Bash）中 → WORK（汗の粒が飛び散る）
 //    Claude Code の応答完了 → DONE（ウィンクに同期してキラキラが散る）
@@ -58,8 +56,6 @@ const vec3  DONE_TINT  = vec3(0.55, 0.83, 0.28); // ドヤ顔（完了）
 const vec3  ERR_TINT   = vec3(0.95, 0.36, 0.42); // 失敗時
 const float GAIN      = 0.30;              // 明るさ。上げすぎると本文が読みにくい
 const float GAZE      = 0.07;              // 視線追従の強さ（0 で固定）
-const float IDLE_AT   = 4.0;               // SMILE → IDLE (秒)
-const float SLEEP_AT  = 22.0;              // IDLE → SLEEP (秒)
 const float CURSOR_Y_FLIP = 1.0;           // 視線が上下逆なら -1.0
 const float NOISE     = 0.05;
 // ---- Claude Code 連携: 状態デコード用キーパレットと距離判定のチューニング -----
@@ -258,8 +254,7 @@ float glyphPixel(int bits, vec2 cellUV) {
 // 表情）と、done のキラキラが使うタイムライン定数のみ。
 // 2026-07-14: 旧単一表情（丸目 idle / 上目遣い think / スリット work /
 // 周期ウィンク done）は「既存パターンの焼き増しはやめて」との指摘があり、
-// バリアント刷新時にプールから削除した。SMILE（打鍵反応）・まばたきの閉じ目・
-// err は対象外で存続。
+// バリアント刷新時にプールから削除した。まばたきの閉じ目・err は対象外で存続。
 //
 // DONE_*: 元は done のウィンクのタイムラインだったが、ウィンク廃止後も
 // キラキラ（doneDecoLum）の「溜め → バースト → 消灯」のリズムとして存続。
@@ -280,8 +275,8 @@ float errMouth(vec2 p) {
 // 2026-07-14: 各フェーズ（idle/think/work/done）に 3 表情を持たせ、VAR_PERIOD
 // ごとに hash で次の表情を選ぶ。完全ランダムで、連続して同じ表情が選ばれるのも
 // 許容（ユーザー要件）。err は 1 表情のまま（要件外）。
-// - 選択は iTime 基準: since 基準だと打鍵のたびに表情が切り替わってしまう
-//   （デコレーション同様、打鍵に左右されない iTime 純関数のループにする）。
+// - 選択は iTime 基準（デコレーション同様、打鍵に左右されない iTime 純関数の
+//   ループ）。2026-07-20 に打鍵依存を全廃したので、これが顔全体の唯一の流儀。
 // - 区間先頭 VAR_MORPH の間、前区間の表情から SDF morph する（表情遷移 =
 //   距離場の線形補間、という既存の流儀のまま。docs/SPEC.md §7.1 の中間形の溶けは
 //   同一フェーズ内の近い形状同士なので許容範囲）。
@@ -305,8 +300,6 @@ float errMouth(vec2 p) {
 //   - 各フェーズの雰囲気（idle=穏やか/think=思案/work=奮闘/done=得意）から
 //     外れない範囲で振れ幅を作る。フェーズ判別が表情バリアントで曖昧に
 //     ならないよう、色とデコレーション（?/汗/キラキラ）は全バリアント共通。
-//   - SMILE（打鍵直後の顔）はバリアント対象外: 入力への即時反応は毎回同じ
-//     顔で返すほうが「反応した」ことが伝わる。
 const float VAR_PERIOD = 7.0;   // 1 表情の保持時間（秒）
 const float VAR_MORPH  = 0.09;  // 区間頭の morph 割合（≈0.63s）
 
@@ -573,9 +566,12 @@ float doneDecoLum(vec2 p, float t) {
 
 // ---- face ------------------------------------------------------------------
 // wIdleS/wThinkS/wWorkS/wDoneS/wErrS はカーソル色から距離ベースで求めた
-// Claude Code 状態の重み（合計 1）。idle バケットの中身だけは、従来通り
-// 「打鍵からの経過秒」で smile/idle/sleep をさらにサブブレンドする。
-float faceField(vec2 p, vec2 g, float since, float t,
+// Claude Code 状態の重み（合計 1）。
+// 2026-07-20: idle バケットの「打鍵からの経過秒」による smile/idle/sleep
+// サブブレンドを廃止し、常に IDLE 表情（+バリアント）にした。SMILE は SLEEP
+// とセットで「放置すると眠る」時間軸を成立させるための即時反応だったが、
+// SLEEP 無効化後は打鍵のたびに表情が跳ねるだけの挙動になっていたため。
+float faceField(vec2 p, vec2 g, float t,
                  float wIdleS, float wThinkS, float wWorkS, float wDoneS, float wErrS) {
     // バリアント選択のタイムラインは全フェーズ共通。可視なのは常にほぼ1フェーズ
     // なので、区間境界が揃っていても見た目には現れない。
@@ -589,22 +585,11 @@ float faceField(vec2 p, vec2 g, float since, float t,
     float de = 0.0, dm = 0.0;
 
     if (wIdleS > 0.004) {
-        float wSmile = 1.0 - smoothstep(IDLE_AT - 1.0, IDLE_AT + 1.0, since);
-        // 2026-07-12: SLEEP を一旦無効化（要望により）。元に戻す場合は下の行を
-        // `float wSleep = smoothstep(SLEEP_AT - 2.0, SLEEP_AT + 2.0, since);` に戻す。
-        float wSleep = 0.0;
-        float wIdle  = clamp(1.0 - wSmile - wSleep, 0.0, 1.0);
-
-        // バリアントは「無入力の IDLE 表情」にだけ適用する。SMILE は打鍵への
-        // 即時反応なので毎回同じ顔で返るほうが「反応した」ことが伝わる。
         float vA = pickVar(vi - 1.0, 21.7), vB = pickVar(vi, 21.7);
-        float eIdleV = mix(idleEyesVar(p, g, vA), idleEyesVar(p, g, vB), vf);
-        float mIdleV = mix(idleMouthVar(p, vA), idleMouthVar(p, vB), vf);
+        float eG = mix(idleEyesVar(p, g, vA), idleEyesVar(p, g, vB), vf);
+        float mG = mix(idleMouthVar(p, vA), idleMouthVar(p, vB), vf);
 
-        float eSmile = min(arcEye(p, -1.0, g), arcEye(p, 1.0, g));
         float eSleep = min(closedEye(p, -1.0, g), closedEye(p, 1.0, g));
-        float eG = wSmile * eSmile + wIdle * eIdleV + wSleep * eSleep;
-        float mG = wSmile * smileMouth(p, 0.46) + wIdle * mIdleV + wSleep * flatMouth(p);
 
         // まばたき。idle ブロック内で完結させる（旧実装は全体 de に wIdleS 減衰で
         // 混ぜていたが、他状態へ閉じ目が滲む余地があった。ブロック内適用なら構造的にゼロ）。
@@ -622,7 +607,7 @@ float faceField(vec2 p, vec2 g, float since, float t,
             float k2 = k - 0.075;
             pulse = max(pulse, smoothstep(0.0, 0.019, k2) * (1.0 - smoothstep(0.030, 0.075, k2)));
         }
-        eG = mix(eG, eSleep, pulse * (1.0 - wSleep));
+        eG = mix(eG, eSleep, pulse);
 
         de += wIdleS * eG;
         dm += wIdleS * mG;
@@ -685,12 +670,12 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 
     vec2 cur = iCurrentCursor.xy / iResolution.xy - 0.5;
     cur.y *= CURSOR_Y_FLIP;
-    float since = max(iTime - iTimeCursorChange, 0.0);
     vec2 g = clamp(cur, -0.5, 0.5) * vec2(2.0, 1.4) * GAZE;
-    // 打鍵が止まって数秒経つと視線が自律的に漂い出す（注意が逸れる）。打鍵で
-    // since がリセットされるため、入力再開の瞬間に重みが 0 へ戻り即カーソル
-    // 注視になる — ステートレスのままで「気づいてこちらを向く」反応が出る。
-    g += gazeWander(iTime) * smoothstep(1.5, 5.0, since);
+    // 視線は常に自律的に漂う（カーソル注視 + ワンダリング）。
+    // 2026-07-20: 以前は iTimeCursorChange からの経過秒でワンダリングをフェード
+    // インさせ、打鍵の瞬間にカーソル注視へ戻していたが、表情側の打鍵リセット
+    // 廃止に合わせて撤去した。これで顔は iTimeCursorChange に一切依存しない。
+    g += gazeWander(iTime);
 
     // --- サイドチャネル: カーソル色から Claude Code の状態を読む ---
     // フェーズ間モーフの時間軸は hook 側の色ランプ（claude-face-hook.sh）が
@@ -730,7 +715,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     wIdleS = mix(wIdleS, 1.0, gate);
     wThinkS *= (1.0 - gate); wWorkS *= (1.0 - gate); wDoneS *= (1.0 - gate); wErrS *= (1.0 - gate);
 
-    float d = faceField(p, g, since, iTime, wIdleS, wThinkS, wWorkS, wDoneS, wErrS);
+    float d = faceField(p, g, iTime, wIdleS, wThinkS, wWorkS, wDoneS, wErrS);
 
     float v = fieldLum(d);
     // 状態デコレーションを輝度側で加算（faceField に混ぜない理由はデコレーション
